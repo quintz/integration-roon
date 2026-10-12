@@ -29,6 +29,11 @@
  *    Note: node-roon-api (re)assigns start/stop_discovery on the prototype in its
  *    constructor, so this one is patched per instance (`fixRoonInstance`, done by
  *    the RoonReconnector constructor).
+ * 7. Crash on wake-up: SOOD joins the multicast group in a socket callback without
+ *    error handling. If the WiFi interface isn't fully up yet (Remote just woke up),
+ *    `addMembership` throws ENODEV/EADDRNOTAVAIL and the whole integration process
+ *    crashes. -> the error is caught, the socket closed, and the next interface scan
+ *    (every 5 s) creates it again.
  *
  * @copyright (c) 2026 by Unfolded Circle ApS.
  * @license Mozilla Public License Version 2.0, see LICENSE for more details.
@@ -36,6 +41,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import dgram from "node:dgram";
 import { createRequire } from "module";
 import type RoonApi from "node-roon-api";
 import type { Core } from "node-roon-api";
@@ -74,6 +80,27 @@ export function applyRoonApiFixes(roonApiClass: any, connectTimeoutMs = CONNECT_
       this._isonopencalled = true;
     }
     return origClose.call(this);
+  };
+
+  // --- 7. don't crash if a multicast group can't be joined (interface not ready yet)
+  const origAddMembership = dgram.Socket.prototype.addMembership;
+  dgram.Socket.prototype.addMembership = function (this: dgram.Socket, ...args: [string, string?]) {
+    try {
+      return origAddMembership.apply(this, args);
+    } catch (e: any) {
+      log.warn(
+        "Could not join multicast group %s on %s: %s - retrying later",
+        args[0],
+        args[1] ?? "default",
+        e?.code ?? e
+      );
+      try {
+        // SOOD recreates closed sockets with its next interface scan
+        this.close();
+      } catch {
+        // ignore
+      }
+    }
   };
 
   // --- 2. connect timeout + 4. no duplicate connections to the same core address
