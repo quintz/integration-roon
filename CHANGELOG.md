@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Changes in the next release_
 
+### Fixed
+
+- Roon Core not found again after a Roon Core restart: if the core answered the discovery (SOOD) while its WebSocket was still starting, the failed connection attempt left a stale entry in node-roon-api and all further discovery answers of this core were ignored until the integration was restarted.
+- Discovery stopped re-scanning network interfaces after the first standby / wake-up of the Remote (SOOD interface timer was cleared but not recreated).
+- Discovery could stay stopped if the Remote went back to standby within 200 ms of waking up.
+
+### Added
+
+- Connect timeout (10 s) for Roon Core connections.
+- Direct reconnect to the last known Roon Core address with increasing delays (2, 5, 10, 20, 30, 60 s, then every 60 s), in addition to the discovery; immediately after the Remote wakes up and at startup. The address is persisted.
+- Tests for the reconnect behaviour against the real node-roon-api and a mock Roon Core.
+
 ---
 
 ## 0.6.2 - 2026-10-30
