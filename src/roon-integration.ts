@@ -25,6 +25,7 @@ import {
   newEntityFromZone
 } from "./util.js";
 import { type RoonDriver as RoonDriverInterface, RoonMediaPlayer } from "./media-player.js";
+import { applyRoonApiFixes, RoonReconnector } from "./roon-connection.js";
 
 import os from "os";
 
@@ -37,6 +38,7 @@ export default class RoonDriver implements RoonDriverInterface {
   public browseService: BrowseService | null = null;
   public roonPaired = false;
   private config: Config;
+  private readonly reconnector: RoonReconnector;
   private static imageConfig: RoonImageOptions = {
     scale: "fit",
     width: 480,
@@ -49,6 +51,8 @@ export default class RoonDriver implements RoonDriverInterface {
     this.driver.init("driver.json", this.handleDriverSetup.bind(this));
     this.config = new Config(this.driver.getConfigDirPath());
     this.initLocalZones();
+    // fix stale connections / missing timeouts in node-roon-api, see roon-connection.ts
+    applyRoonApiFixes(RoonApi);
     this.roon = new RoonApi({
       extension_id: "com.uc.remote",
       display_name: `Remote Two/3 Integration (${os.hostname()})`,
@@ -62,6 +66,7 @@ export default class RoonDriver implements RoonDriverInterface {
     });
 
     this.roonApiStatus = new RoonApiStatus(this.roon);
+    this.reconnector = new RoonReconnector(this.roon);
     this.setupDriverEvents();
   }
 
@@ -135,6 +140,9 @@ export default class RoonDriver implements RoonDriverInterface {
 
   private async handleConnect() {
     this.roon.start_discovery();
+    if (!this.roonPaired) {
+      this.reconnector.start();
+    }
     this.roonApiStatus?.set_status("Connected", false);
     await this.driver.setDeviceState(uc.DeviceStates.Connected);
   }
@@ -175,6 +183,7 @@ export default class RoonDriver implements RoonDriverInterface {
     log.debug("enter standby");
     this.roonApiStatus?.set_status("Standby", false);
     // #56 force Roon disconnect
+    this.reconnector.stop();
     this.roon.stop_discovery();
     this.roon.disconnect_all();
   }
@@ -183,6 +192,8 @@ export default class RoonDriver implements RoonDriverInterface {
     log.info("exit standby");
     // #56 force Roon reconnect
     this.roon.start_discovery();
+    // don't wait for SOOD: connect to the last known core right away, then retry with increasing delays
+    this.reconnector.start();
 
     this.roonApiStatus?.set_status("Connected", false);
   }
@@ -314,6 +325,7 @@ export default class RoonDriver implements RoonDriverInterface {
     );
 
     log.info(`Roon Core paired: ${core.core_id} ${core.display_name} ${core.display_version}`);
+    this.reconnector.onPaired(core);
 
     await this.subscribeRoonZones();
   }
@@ -321,6 +333,7 @@ export default class RoonDriver implements RoonDriverInterface {
   private handleRoonCoreUnpaired() {
     log.info("Roon Core unpaired");
     this.roonPaired = false;
+    this.reconnector.onUnpaired();
     this.roonCore = null;
     this.roonTransport = null;
     this.browseService = null;
@@ -389,5 +402,6 @@ export default class RoonDriver implements RoonDriverInterface {
     });
     this.roonApiStatus.set_status("Disconnected", false);
     this.roon.start_discovery();
+    this.reconnector.start();
   }
 }
