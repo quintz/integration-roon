@@ -10,14 +10,44 @@ import type { Zone } from "node-roon-api";
 import path from "path";
 
 const CFG_FILENAME = "roon_config.json";
+const SETTINGS_FILENAME = "roon_settings.json";
+
+interface Settings {
+  /** Name of the Roon profile to select after connecting to the Roon Core. Not set: don't change the profile. */
+  profile?: string;
+}
 
 class Config {
   private zones: { [key: string]: Zone } = {};
   private readonly configPath: string;
+  private settings: Settings = {};
+  private readonly settingsPath: string;
 
   constructor(configDir: string) {
     this.configPath = path.join(configDir, CFG_FILENAME);
+    this.settingsPath = path.join(configDir, SETTINGS_FILENAME);
     this.loadFromFile();
+    this.loadSettings();
+  }
+
+  /** Name of the Roon profile to use, or `undefined` to keep the profile selected in Roon. */
+  public getProfile(): string | undefined {
+    return this.settings.profile || undefined;
+  }
+
+  public setProfile(profile: string | undefined) {
+    this.settings.profile = profile || undefined;
+    fs.writeFileSync(this.settingsPath, JSON.stringify(this.settings, null, 2), "utf-8");
+  }
+
+  private loadSettings() {
+    try {
+      if (fs.existsSync(this.settingsPath)) {
+        this.settings = JSON.parse(fs.readFileSync(this.settingsPath, "utf-8"));
+      }
+    } catch {
+      this.settings = {};
+    }
   }
 
   public updateZone(zone: Zone) {

@@ -13,6 +13,16 @@ import log from "./loggers.js";
 import { mapRoonErrorToStatusCode } from "./util.js";
 
 const PAGE_SIZE = 100;
+const SETTINGS_TITLE = "Settings";
+const PROFILE_TITLE = "Profile";
+
+export interface RoonProfile {
+  name: string;
+  /** Profile is currently used by this extension. */
+  selected: boolean;
+}
+
+export type ProfileSelection = "selected" | "already_selected" | "not_found" | "not_applied" | "unsupported" | "error";
 
 export class BrowseService {
   constructor(
@@ -148,6 +158,89 @@ export class BrowseService {
     }
   }
 
+  /**
+   * Open the Roon profile list: Explore > Settings > Profile.
+   *
+   * Uses the default browse session, the same one used for browsing and playback from the Remote.
+   *
+   * @return The profile items, or `undefined` if the menu structure couldn't be found.
+   */
+  private async openProfileList(): Promise<Item[] | undefined> {
+    const hierarchy = "browse";
+    let browseResult = await this.browse({ hierarchy, pop_all: true });
+    for (const title of [SETTINGS_TITLE, PROFILE_TITLE]) {
+      const count = browseResult.list?.count ?? 0;
+      const { items } = await this.load({ hierarchy, offset: 0, count: Math.max(count, 1) });
+      const entry = items.find((item) => item.title === title);
+      if (!entry?.item_key) {
+        log.warn(`Roon profile selection: menu entry '${title}' not found in ${items.map((i) => i.title).join(", ")}`);
+        return undefined;
+      }
+      browseResult = await this.browse({ hierarchy, item_key: entry.item_key });
+    }
+    const count = browseResult.list?.count ?? 0;
+    const { items } = await this.load({ hierarchy, offset: 0, count: Math.max(count, 1) });
+    return items.filter((item) => !!item.title);
+  }
+
+  /**
+   * Get the Roon profiles and which one is currently used by this extension.
+   *
+   * @return The profiles, empty if Roon doesn't offer a profile selection.
+   */
+  async listProfiles(): Promise<RoonProfile[]> {
+    try {
+      const items = await this.openProfileList();
+      return (items ?? []).map((item) => ({
+        name: item.title,
+        selected: item.subtitle?.toLowerCase() === "selected"
+      }));
+    } catch (e: unknown) {
+      log.error(`Error reading Roon profiles: ${e}`);
+      return [];
+    }
+  }
+
+  /**
+   * Select the Roon profile used by this extension, e.g. for playlists and listening history.
+   *
+   * @param name Name of the Roon profile.
+   * @return Result of the selection. `not_applied`: Roon accepted the selection, but still reports another profile.
+   */
+  async selectProfile(name: string): Promise<ProfileSelection> {
+    try {
+      const items = await this.openProfileList();
+      if (!items) {
+        return "unsupported";
+      }
+      const profile = items.find((item) => item.title === name);
+      if (!profile?.item_key) {
+        log.warn(`Roon profile '${name}' not found. Available: ${items.map((i) => i.title).join(", ")}`);
+        return "not_found";
+      }
+      if (profile.subtitle?.toLowerCase() === "selected") {
+        log.info(`Roon profile '${name}' is already selected`);
+        return "already_selected";
+      }
+
+      await this.browse({ hierarchy: "browse", item_key: profile.item_key });
+
+      const selected = (await this.listProfiles()).find((p) => p.selected);
+      if (selected?.name !== name) {
+        log.warn(`Roon accepted profile '${name}', but still reports '${selected?.name ?? "-"}' as selected profile`);
+        return "not_applied";
+      }
+      log.info(`Selected Roon profile '${name}'`);
+      return "selected";
+    } catch (e: unknown) {
+      log.error(`Error selecting Roon profile '${name}': ${e}`);
+      return "error";
+    } finally {
+      // leave the browse session at the root level for the next browse request from the Remote
+      await this.browse({ hierarchy: "browse", pop_all: true }).catch(() => {});
+    }
+  }
+
   buildImageUrl(imageKey: string): string {
     const { width, height, scale, format } = this.imageConfig;
     return `http://${this.coreIp}:${this.roonPort}/api/image/${imageKey}?scale=${scale}&width=${width}&height=${height}&format=${encodeURIComponent(format || "image/jpeg")}`;
@@ -214,10 +307,7 @@ export class BrowseService {
       let hint = firstItem.hint;
 
       if (hint !== "action" && hint !== "action_list") {
-        log.error(
-          `Playback requested but item is a list, not a playable action or action_list id: ${mediaId} (hint: ${hint})`
-        );
-        return StatusCodes.ServerError;
+        return unplayableStatus(mediaId, browseResult.list?.title, loadResult.items);
       }
 
       if (hint === "action_list") {
@@ -337,10 +427,7 @@ export class BrowseService {
 
       // First item should be the action/action_list for playing this item (eg Play Genre, Play Artist, Play Album)
       if (firstItem.hint !== "action_list" && firstItem.hint !== "action") {
-        log.error(
-          `Found media does not have playable action_list hint='${firstItem.hint}' '${items.map((i) => i.title).join(", ")}'`
-        );
-        return StatusCodes.ServerError;
+        return unplayableStatus(path.join("/"), browseResult.list?.title, items);
       }
 
       log.debug(`Found playable item: ${JSON.stringify(firstItem)}`);
@@ -460,4 +547,44 @@ export class BrowseService {
 
     return loadResponse.items;
   }
+}
+
+/**
+ * Title of the single item Roon returns when it can't open a list.
+ *
+ * Seen for local Roon playlists that belong to another Roon profile than the one used by the extension:
+ * the playlist is listed, but browsing into it only returns one item "Not Found" without a hint.
+ */
+const ROON_NOT_FOUND_TITLE = "Not Found";
+
+/**
+ * Determine the status code and log a meaningful message if a browsed item can't be played.
+ *
+ * @param mediaId The media id (item key or path) that was requested.
+ * @param listTitle Title of the list Roon returned for the media id.
+ * @param items Items of that list (at least the first one).
+ * @return `NotFound` if Roon couldn't open the item, `BadRequest` if the item is a folder or not playable.
+ */
+export function unplayableStatus(mediaId: string, listTitle: string | undefined, items: Item[]): StatusCodes {
+  const firstItem = items[0];
+  const name = listTitle ? `'${listTitle}'` : mediaId;
+
+  if (firstItem && !firstItem.hint && firstItem.title === ROON_NOT_FOUND_TITLE) {
+    log.error(
+      `Roon can't open ${name} (${mediaId}): it only returns '${ROON_NOT_FOUND_TITLE}'. ` +
+        "If this is a Roon playlist, it probably belongs to another Roon profile: " +
+        "select the profile in the integration setup or in Roon under Settings > Profile."
+    );
+    return StatusCodes.NotFound;
+  }
+
+  if (firstItem?.hint === "list") {
+    log.warn(`${name} (${mediaId}) is a folder and can't be played directly. Open it and play one of its entries.`);
+    return StatusCodes.BadRequest;
+  }
+
+  log.error(
+    `${name} (${mediaId}) has no play action. First item: '${firstItem?.title ?? "-"}' (hint: ${firstItem?.hint ?? "none"})`
+  );
+  return StatusCodes.BadRequest;
 }

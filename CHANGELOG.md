@@ -16,8 +16,11 @@ _Changes in the next release_
 - Discovery could stay stopped if the Remote went back to standby within 200 ms of waking up.
 - Integration crashed after waking up from standby (`Error: addMembership ENODEV`) when the WiFi interface was not ready yet. The failed discovery socket is now closed and recreated by the next interface scan.
 
+- Playing a Roon playlist that Roon can't open (only returns "Not Found", e.g. a playlist of another Roon profile) or a folder (e.g. a TIDAL playlist category) returned a generic server error (500). It now returns "not found" (404) or "bad request" (400) and logs the reason.
+
 ### Added
 
+- Optional Roon profile selection in the integration setup (only shown if Roon has more than one profile). Playlists created in Roon belong to a profile, and the extension only sees the playlists of its selected profile. The profile is selected again after each connection to the Roon Core.
 - Connect timeout (10 s) for Roon Core connections.
 - Direct reconnect to the last known Roon Core address with increasing delays (2, 5, 10, 20, 30, 60 s, then every 60 s), in addition to the discovery; immediately after the Remote wakes up and at startup. The address is persisted.
 - Tests for the reconnect behaviour against the real node-roon-api and a mock Roon Core.
