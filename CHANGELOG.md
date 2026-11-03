@@ -16,7 +16,7 @@ _Changes in the next release_
 - Discovery could stay stopped if the Remote went back to standby within 200 ms of waking up.
 - Integration crashed after waking up from standby (`Error: addMembership ENODEV`) when the WiFi interface was not ready yet. The failed discovery socket is now closed and recreated by the next interface scan.
 
-- Playing a Roon playlist that Roon can't open (only returns "Not Found", e.g. a playlist of another Roon profile) or a folder (e.g. a TIDAL playlist category) returned a generic server error (500). It now returns "not found" (404) or "bad request" (400) and logs the reason.
+- Playing a Roon playlist that Roon can't open (only returns "Not Found", e.g. a smart playlist, which the Roon API doesn't support, or a playlist of another Roon profile) or a folder (e.g. a TIDAL playlist category) returned a generic server error (500). It now returns "not found" (404) or "bad request" (400) and logs the reason.
 
 ### Added
 
