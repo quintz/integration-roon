@@ -29,6 +29,9 @@ import { applyRoonApiFixes, RoonReconnector } from "./roon-connection.js";
 
 import os from "os";
 
+/** Dropdown id in the setup to keep the profile selected in Roon. */
+const KEEP_PROFILE = "-";
+
 export default class RoonDriver implements RoonDriverInterface {
   private driver: uc.IntegrationAPI;
   private readonly roon: RoonApi;
@@ -78,6 +81,10 @@ export default class RoonDriver implements RoonDriverInterface {
     if (msg instanceof uc.UserConfirmationResponse) {
       return this.handleDriverSetupUserConfirmation(msg);
     }
+
+    if (msg instanceof uc.UserDataResponse) {
+      return this.handleDriverSetupProfile(msg);
+    }
     log.error("Unknown Roon integration setup message", msg);
     return new uc.AbortDriverSetup("Unknown Roon integration setup message");
   }
@@ -108,9 +115,85 @@ export default class RoonDriver implements RoonDriverInterface {
     if (this.roonPaired) {
       await this.getRoonZones();
       // TODO let user choose which Zones to add
-      return new uc.SetupComplete();
+      return await this.requestProfileSelection();
     }
     return new uc.SetupError("Failed to pair with Roon");
+  }
+
+  /**
+   * Let the user choose the Roon profile if Roon has more than one.
+   *
+   * Playlists created in Roon belong to a profile. The extension only sees the playlists of its selected profile.
+   */
+  private async requestProfileSelection(): Promise<uc.SetupAction> {
+    const profiles = (await this.browseService?.listProfiles()) ?? [];
+    if (profiles.length < 2) {
+      log.info(`Roon profiles: ${profiles.map((p) => p.name).join(", ") || "-"}, no selection needed`);
+      return new uc.SetupComplete();
+    }
+
+    const configured = this.config.getProfile();
+    const current = profiles.find((p) => p.selected)?.name;
+    const value = configured && profiles.some((p) => p.name === configured) ? configured : (current ?? KEEP_PROFILE);
+
+    return new uc.RequestUserInput({ en: "Roon profile", de: "Roon-Profil" }, [
+      {
+        id: "info",
+        label: { en: "Roon profile", de: "Roon-Profil" },
+        field: {
+          label: {
+            value: {
+              en:
+                "Playlists created in Roon belong to a Roon profile. Choose the profile whose playlists you want to browse and play with the Remote. Currently used by the integration: " +
+                (current ?? "-"),
+              de:
+                "In Roon erstellte Playlists gehören zu einem Roon-Profil. Wähle das Profil, dessen Playlists du mit der Remote durchsuchen und abspielen möchtest. Aktuell von der Integration verwendet: " +
+                (current ?? "-")
+            }
+          }
+        }
+      },
+      {
+        id: "profile",
+        label: { en: "Profile", de: "Profil" },
+        field: {
+          dropdown: {
+            value,
+            items: [
+              { id: KEEP_PROFILE, label: { en: "Don't change", de: "Nicht ändern" } },
+              ...profiles.map((p) => ({ id: p.name, label: { en: p.name } }))
+            ]
+          }
+        }
+      }
+    ]);
+  }
+
+  private async handleDriverSetupProfile(msg: uc.UserDataResponse): Promise<uc.SetupAction> {
+    const input = msg.inputValues?.profile?.trim();
+    const profile = input && input !== KEEP_PROFILE ? input : undefined;
+    this.config.setProfile(profile);
+    if (profile) {
+      await this.applyProfile();
+    } else {
+      log.info("Roon profile: keep the profile selected in Roon");
+    }
+    return new uc.SetupComplete();
+  }
+
+  /**
+   * Select the configured Roon profile. Called after each pairing, because the selection might not survive a
+   * Roon Core restart.
+   */
+  private async applyProfile() {
+    const profile = this.config.getProfile();
+    if (!profile || !this.browseService) {
+      return;
+    }
+    const result = await this.browseService.selectProfile(profile);
+    if (result !== "selected" && result !== "already_selected") {
+      log.warn(`Could not select Roon profile '${profile}': ${result}`);
+    }
   }
 
   /**
@@ -328,6 +411,7 @@ export default class RoonDriver implements RoonDriverInterface {
     this.reconnector.onPaired(core);
 
     await this.subscribeRoonZones();
+    await this.applyProfile();
   }
 
   private handleRoonCoreUnpaired() {
