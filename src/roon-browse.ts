@@ -552,8 +552,9 @@ export class BrowseService {
 /**
  * Title of the single item Roon returns when it can't open a list.
  *
- * Seen for local Roon playlists that belong to another Roon profile than the one used by the extension:
- * the playlist is listed, but browsing into it only returns one item "Not Found" without a hint.
+ * Seen for Roon smart playlists, which the Roon API doesn't support, and for playlists of another Roon profile than
+ * the one used by the extension: the playlist is listed, but browsing into it only returns one item "Not Found"
+ * without a hint.
  */
 const ROON_NOT_FOUND_TITLE = "Not Found";
 
@@ -572,8 +573,8 @@ export function unplayableStatus(mediaId: string, listTitle: string | undefined,
   if (firstItem && !firstItem.hint && firstItem.title === ROON_NOT_FOUND_TITLE) {
     log.error(
       `Roon can't open ${name} (${mediaId}): it only returns '${ROON_NOT_FOUND_TITLE}'. ` +
-        "If this is a Roon playlist, it probably belongs to another Roon profile: " +
-        "select the profile in the integration setup or in Roon under Settings > Profile."
+        "Smart playlists are not supported by the Roon API. " +
+        "A regular playlist probably belongs to another Roon profile: select the profile in the integration setup."
     );
     return StatusCodes.NotFound;
   }
