@@ -170,6 +170,24 @@ test.serial("hanging handshake is aborted by the connect timeout", async (t) => 
   roon.stop_discovery();
 });
 
+test.serial("open connection is not closed by the connect timeout", async (t) => {
+  // node-roon-api >= 9768f37 no longer sets transport._isonopencalled
+  const port = 19437;
+  const core = startCore(port);
+  const { roon, rc, st } = makeRoon();
+  roon.start_discovery();
+  await sleep(200);
+  rc.stop();
+  sood(roon, port);
+  t.true(await until(() => st.paired === 1, 3000), "paired");
+  await sleep(2000); // longer than the 1500 ms test connect timeout
+  t.is(st.unpaired, 0, "still connected after the connect timeout");
+  t.true(roon.is_paired);
+  roon.stop_discovery();
+  roon.disconnect_all();
+  await stopCore(core);
+});
+
 test.serial("standby stops retrying, wake-up reconnects immediately", async (t) => {
   const port = 19434;
   const { roon, rc, st } = makeRoon();
@@ -208,7 +226,7 @@ test.serial("SOOD keeps re-scanning network interfaces after standby / wake-up",
   roon.stop_discovery();
 });
 
-test.serial("stop right after start (wake up + sleep within 200 ms) doesn't break the next start", async (t) => {
+test.serial("stop right after start (wake up + sleep again) doesn't break the next start", async (t) => {
   const { roon } = makeRoon();
   roon.start_discovery();
   roon.stop_discovery(); // immediately: scan interval is created 200 ms later

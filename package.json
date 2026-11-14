@@ -1,7 +1,7 @@
 {
   "name": "uc-integration-roon",
   "type": "module",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Roon Integration for the Unfolded Circle",
   "main": "dist/src/index.js",
   "scripts": {
@@ -17,22 +17,22 @@
   "dependencies": {
     "@unfoldedcircle/integration-api": "^0.5.0",
     "debug": "^4.4.3",
-    "node-roon-api": "github:unfoldedcircle/node-roon-api#e4b1ab30c8781395d84674adfa719da5846e9683",
+    "node-roon-api": "github:unfoldedcircle/node-roon-api#9768f37311f53ee2263a47fa6268c10ffb20e679",
     "node-roon-api-browse": "github:roonlabs/node-roon-api-browse#98adcbaba3a30fd6ce109c1f04cd361536143222",
     "node-roon-api-image": "github:roonlabs/node-roon-api-image#a5f0efaf2dfb5457e91abe326c3a40d865131d32",
     "node-roon-api-status": "github:roonlabs/node-roon-api-status#504c918d6da267e03fbb4337befa71ca3d3c7526",
     "node-roon-api-transport": "github:roonlabs/node-roon-api-transport#2ee60008a4cdb90c34ff3de58bb4b949067f1d20",
-    "ws": "^8.21.0"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@ava/typescript": "^7.0.0",
     "@types/debug": "^4.1.12",
-    "@types/node": "^22.13.9",
+    "@types/node": "^22.20.5",
     "ava": "^8.0.1",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.1",
     "eslint-plugin-prettier": "^5.2.3",
-    "globals": "^17.6.0",
+    "globals": "^17.13.0",
     "neostandard": "^0.13.0",
     "prettier": "^3.5.3",
     "typescript": "^5.8.2",

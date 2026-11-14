@@ -1,35 +1,28 @@
 /**
  * Robust Roon Core (re)connection.
  *
- * Fixes and additions on top of node-roon-api (unfoldedcircle fork):
+ * Fixes and additions on top of node-roon-api (unfoldedcircle fork).
  *
- * 1. Stale connection entries: `WSTransport.close()` only calls `onclose` if the
- *    WebSocket was ever opened. If a connection attempt fails (e.g. the Roon Core
- *    answers the SOOD discovery while it is still restarting and its WebSocket
- *    port isn't open yet), the entry in `RoonApi._sood_conns` is never removed and
- *    every later SOOD answer of this core is ignored ("already connected") until
- *    the integration is restarted.
- *    -> `onclose` is now always called exactly once.
- * 2. No connect timeout: a connection attempt to an unreachable host can hang for
+ * Since node-roon-api 9768f37 (integration v0.6.3, feature-and-bug-tracker#831), the library itself calls
+ * `onclose` for connections that fail before they are opened, and resets the SOOD interface timer on stop.
+ * The following issues remain and are handled here:
+ *
+ * 1. No connect timeout: a connection attempt to an unreachable host can hang for
  *    minutes (OS TCP timeout). -> abort after `CONNECT_TIMEOUT_MS`.
- * 3. Reconnect only via SOOD (UDP multicast/broadcast), which is unreliable over
+ * 2. Reconnect only via SOOD (UDP multicast/broadcast), which is unreliable over
  *    WiFi. -> `RoonReconnector` additionally connects directly to the last known
  *    core address with increasing delays (2 s, 5 s, 10 s, 20 s, 30 s, 60 s, ...),
- *    and immediately after the Remote wakes up.
- * 4. Safety net: entries in `_sood_conns` whose transport is closed are removed
- *    before each reconnect attempt.
- * 5. SOOD dead after standby: `Sood.stop()` clears the 5 s network-interface timer
- *    but keeps the handle, so the next `start()` (Remote woke up) never creates it
- *    again. Interfaces are then never re-scanned - if WiFi wasn't fully up at
- *    wake-up, discovery stays broken. -> reset the handle in `stop_discovery()`.
- * 6. Race: `start_discovery()` creates its scan interval 200 ms later. A
- *    `stop_discovery()` within these 200 ms (Remote wakes up and sleeps again)
- *    can't clear it; the next `start_discovery()` then sees the interval and
+ *    and immediately after the Remote wakes up. Entries in `_sood_conns` whose
+ *    transport is closed are removed before each attempt (safety net), and no
+ *    second connection to the same core address is opened.
+ * 3. Race: `start_discovery()` creates its scan interval in the callback of
+ *    `Sood.start()`. A `stop_discovery()` before that (Remote wakes up and sleeps
+ *    again) can't clear it; the next `start_discovery()` then sees the interval and
  *    returns early - discovery stays stopped. -> clear such a late interval.
  *    Note: node-roon-api (re)assigns start/stop_discovery on the prototype in its
  *    constructor, so this one is patched per instance (`fixRoonInstance`, done by
  *    the RoonReconnector constructor).
- * 7. Crash on wake-up: SOOD joins the multicast group in a socket callback without
+ * 4. Crash on wake-up: SOOD joins the multicast group in a socket callback without
  *    error handling. If the WiFi interface isn't fully up yet (Remote just woke up),
  *    `addMembership` throws ENODEV/EADDRNOTAVAIL and the whole integration process
  *    crashes. -> the error is caught, the socket closed, and the next interface scan
@@ -42,12 +35,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import dgram from "node:dgram";
-import { createRequire } from "module";
 import type RoonApi from "node-roon-api";
 import type { Core } from "node-roon-api";
 import log from "./loggers.js";
-
-const require = createRequire(import.meta.url);
 
 export const ROON_SERVICE_ID = "00720724-5143-4a9b-abac-0e50cba674bb";
 export const CONNECT_TIMEOUT_MS = 10_000;
@@ -70,19 +60,7 @@ export function applyRoonApiFixes(roonApiClass: any, connectTimeoutMs = CONNECT_
   }
   fixesApplied = true;
 
-  // --- 1. always run onclose (cleans _sood_conns), also if the socket never opened
-  const WSTransport = require("node-roon-api/transport-websocket.js");
-  const origClose = WSTransport.prototype.close;
-  WSTransport.prototype.close = function (this: any) {
-    if (!this._isonopencalled && !this._onclosecalled) {
-      log.debug("Roon connection to %s:%s failed before it was opened", this.host, this.port);
-      // let the original implementation call onclose()
-      this._isonopencalled = true;
-    }
-    return origClose.call(this);
-  };
-
-  // --- 7. don't crash if a multicast group can't be joined (interface not ready yet)
+  // --- 4. don't crash if a multicast group can't be joined (interface not ready yet)
   const origAddMembership = dgram.Socket.prototype.addMembership;
   dgram.Socket.prototype.addMembership = function (this: dgram.Socket, ...args: [string, string?]) {
     try {
@@ -103,7 +81,7 @@ export function applyRoonApiFixes(roonApiClass: any, connectTimeoutMs = CONNECT_
     }
   };
 
-  // --- 2. connect timeout + 4. no duplicate connections to the same core address
+  // --- 1. connect timeout + 2. no duplicate connections to the same core address
   const origWsConnect = roonApiClass.prototype.ws_connect;
   roonApiClass.prototype.ws_connect = function (
     this: any,
@@ -120,8 +98,10 @@ export function applyRoonApiFixes(roonApiClass: any, connectTimeoutMs = CONNECT_
     }
     const moo = origWsConnect.call(this, opts);
     const transport = moo.transport;
+    // node-roon-api >= 9768f37 no longer tracks whether the socket was opened: track it here
+    let opened = false;
     const timer = setTimeout(() => {
-      if (!transport._isonopencalled && transport.ws) {
+      if (!opened && transport.ws) {
         log.warn("Roon connection to %s:%s timed out after %d ms", opts.host, opts.port, connectTimeoutMs);
         try {
           transport.ws.terminate?.();
@@ -133,6 +113,7 @@ export function applyRoonApiFixes(roonApiClass: any, connectTimeoutMs = CONNECT_
     }, connectTimeoutMs);
     const onopen = transport.onopen;
     transport.onopen = (...args: unknown[]) => {
+      opened = true;
       clearTimeout(timer);
       return onopen.apply(transport, args);
     };
@@ -150,7 +131,7 @@ export function applyRoonApiFixes(roonApiClass: any, connectTimeoutMs = CONNECT_
 }
 
 /**
- * Per-instance fixes (fix 5). Idempotent.
+ * Per-instance fixes (fix 3). Idempotent.
  */
 export function fixRoonInstance(roon: any): void {
   if (roon.__ucFixed) {
@@ -167,11 +148,7 @@ export function fixRoonInstance(roon: any): void {
   roon.stop_discovery = function (this: any, ...args: unknown[]) {
     this.__discoveryStopped = true;
     const result = origStopDiscovery.apply(this, args);
-    if (this._sood) {
-      // fix 5: Sood.stop() cleared the timer but kept the handle: start() wouldn't recreate it
-      this._sood.interface_timer = undefined;
-    }
-    // fix 6: the scan interval of a start_discovery() < 200 ms ago is created after this stop
+    // the scan interval of a start_discovery() shortly before is created after this stop
     setTimeout(() => {
       if (this.__discoveryStopped && this.scanIntervalId) {
         log.debug("Clearing Roon scan interval created after stop_discovery()");
